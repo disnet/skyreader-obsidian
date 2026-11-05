@@ -150,7 +150,7 @@ describe('runSync', () => {
     });
     expect(files.get(path)).toContain('> second');
     expect(files.get(path)).toContain('My own thoughts');
-    expect(frontmatter.get(path)?.skyreader).toBe('saved:other');
+    expect(frontmatter.get(path)?.skyreader_id).toBe('saved:other');
     // Nothing changed: nothing written.
     expect(await runSync(fetch, store, settings, state)).toEqual({
       created: 0,
