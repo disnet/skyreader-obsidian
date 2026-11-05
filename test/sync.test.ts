@@ -72,7 +72,7 @@ describe('render', () => {
       doi: '10.48550/arXiv.1706.03762',
       arxiv: '1706.03762',
       published: '2017-06-12',
-      skyreader: 'saved:3abc',
+      skyreader_id: 'saved:3abc',
     });
   });
 });

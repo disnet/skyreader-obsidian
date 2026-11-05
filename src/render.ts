@@ -125,7 +125,7 @@ export function replaceRegion(content: string, region: string): string {
 /**
  * Frontmatter properties Skyreader sets (and updates; other properties are
  * left alone). Citation details are what a reference manager or a Dataview
- * query needs. `skyreader` is the page's id in Skyreader.
+ * query needs. `skyreader_id` is the page's id in Skyreader.
  */
 export function frontmatterFor(source: SyncSource): Record<string, string | undefined> {
   return {
@@ -136,7 +136,7 @@ export function frontmatterFor(source: SyncSource): Record<string, string | unde
     arxiv: source.arxivId,
     published: day(source.publishedAt),
     saved: day(source.savedAt),
-    skyreader: source.id,
+    skyreader_id: source.id,
   };
 }
 
