@@ -65,6 +65,9 @@ describe('render', () => {
 
   it('names notes safely and sets citation frontmatter', () => {
     expect(noteName({ ...paper, title: 'A/B: what? #1 [draft]' })).toBe('A B what 1 draft');
+    expect(noteName({ ...paper, title: 'Tab\there\u0000and\u001fthere' })).toBe(
+      'Tab here and there'
+    );
     expect(
       noteName({ kind: 'highlighted', highlights: [], url: 'https://www.example.com/x' })
     ).toBe('example.com');

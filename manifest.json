@@ -1,8 +1,8 @@
 {
   "id": "skyreader",
   "name": "Skyreader",
-  "version": "0.1.1",
-  "minAppVersion": "1.4.10",
+  "version": "0.1.2",
+  "minAppVersion": "1.13.0",
   "description": "Keep your Skyreader highlights and notes in your vault, one note per article, with citation details.",
   "author": "Skyreader",
   "authorUrl": "https://skyreader.app",

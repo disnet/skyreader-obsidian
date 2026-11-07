@@ -5,8 +5,9 @@ import {
   Plugin,
   PluginSettingTab,
   requestUrl,
-  Setting,
   TFile,
+  type SettingDefinition,
+  type SettingDefinitionItem,
 } from 'obsidian';
 import {
   emptyState,
@@ -156,12 +157,15 @@ export default class SkyreaderPlugin extends Plugin {
       setFrontmatter: async (path, fields) => {
         const found = file(path);
         if (!found) return;
-        await this.app.fileManager.processFrontMatter(found, (frontmatter) => {
-          for (const [key, value] of Object.entries(fields)) {
-            if (value === undefined) delete frontmatter[key];
-            else frontmatter[key] = value;
+        await this.app.fileManager.processFrontMatter(
+          found,
+          (frontmatter: Record<string, unknown>) => {
+            for (const [key, value] of Object.entries(fields)) {
+              if (value === undefined) delete frontmatter[key];
+              else frontmatter[key] = value;
+            }
           }
-        });
+        );
       },
       ensureFolder: async (path) => {
         const normalized = normalizePath(path);
@@ -174,6 +178,9 @@ export default class SkyreaderPlugin extends Plugin {
 class SkyreaderSettingTab extends PluginSettingTab {
   private collections: { id: string; name: string }[] | null = null;
   private collectionsError: string | null = null;
+  private loadingCollections = false;
+  /** Bumped when the password or server changes, so a load already under way is ignored. */
+  private generation = 0;
 
   constructor(
     app: App,
@@ -182,137 +189,185 @@ class SkyreaderSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  display() {
-    const { containerEl } = this;
+  getSettingDefinitions(): SettingDefinitionItem[] {
     const settings = this.plugin.settings;
-    const save = async () => {
-      await this.plugin.persist();
-    };
-    containerEl.empty();
-
-    new Setting(containerEl)
-      .setName('App password')
-      .setDesc(
-        'Make one in Skyreader under Settings → Notes & references. Highlight sync needs a Supporter plan.'
-      )
-      .addText((text) => {
-        text.inputEl.type = 'password';
-        text
-          .setPlaceholder('xxxx-xxxx-xxxx-xxxx-xxxx')
-          .setValue(settings.appPassword)
-          .onChange(async (value) => {
-            settings.appPassword = value.trim();
-            this.collections = null;
-            await save();
+    return [
+      {
+        name: 'App password',
+        desc: APP_PASSWORD_DESC,
+        // A password field, which the declarative text control can't be.
+        render: (setting) => {
+          // Named here too, in case a render row isn't given its definition's text.
+          setting.setName('App password').setDesc(APP_PASSWORD_DESC);
+          setting.addText((text) => {
+            text.inputEl.type = 'password';
+            text
+              .setPlaceholder('xxxx-xxxx-xxxx-xxxx-xxxx')
+              .setValue(settings.appPassword)
+              .onChange(async (value) => {
+                settings.appPassword = value.trim();
+                this.forgetCollections();
+                await this.plugin.persist();
+              });
           });
-      });
-
-    new Setting(containerEl)
-      .setName('Folder')
-      .setDesc('Where new notes go, one per article. Notes you move elsewhere stay synced.')
-      .addText((text) =>
-        text.setValue(settings.folder).onChange(async (value) => {
-          settings.folder = value;
-          await save();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName('What to sync')
-      .setDesc(
-        'Everything you highlight, or every save in the Shelf collections you choose, highlighted or not.'
-      )
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('everything', 'Everything highlighted')
-          .addOption('collections', 'Chosen collections')
-          .setValue(settings.scope)
-          .onChange(async (value) => {
-            settings.scope = value === 'collections' ? 'collections' : 'everything';
-            await save();
-            this.display();
-          })
-      );
-
-    if (settings.scope === 'collections') this.displayCollections(containerEl, save);
-
-    new Setting(containerEl)
-      .setName('Sync every')
-      .setDesc('Minutes between syncs. 0 syncs only when you run “Sync highlights now”.')
-      .addText((text) =>
-        text.setValue(String(settings.intervalMinutes)).onChange(async (value) => {
-          const minutes = Number(value);
-          if (!Number.isInteger(minutes) || minutes < 0) return;
+        },
+      },
+      {
+        name: 'Folder',
+        desc: 'Where new notes go, one per article. Notes you move elsewhere stay synced.',
+        control: { type: 'folder', key: 'folder', defaultValue: DEFAULT_SETTINGS.folder },
+      },
+      {
+        name: 'What to sync',
+        desc: 'Everything you highlight, or every save in the Shelf collections you choose, highlighted or not.',
+        control: {
+          type: 'dropdown',
+          key: 'scope',
+          options: { everything: 'Everything highlighted', collections: 'Chosen collections' },
+        },
+      },
+      ...(settings.scope === 'collections' ? [this.collectionsGroup()] : []),
+      {
+        name: 'Sync every',
+        desc: 'Minutes between syncs. 0 syncs only when you run “Sync highlights now”.',
+        control: {
+          type: 'number',
+          key: 'intervalMinutes',
+          // What text that isn't a number becomes, rather than 0 (which stops syncing).
+          defaultValue: DEFAULT_SETTINGS.intervalMinutes,
+          min: 0,
+          step: 1,
           // Under 5 minutes would spend the server's allowance for nothing.
-          settings.intervalMinutes = minutes === 0 ? 0 : Math.max(5, minutes);
-          await save();
-          this.plugin.schedule();
-        })
-      );
+          validate: (minutes) =>
+            Number.isInteger(minutes) && (minutes === 0 || minutes >= 5)
+              ? undefined
+              : 'Whole minutes, at least 5, or 0.',
+        },
+      },
+      {
+        name: 'Server',
+        desc: 'Change only to sync from a Skyreader other than skyreader.app.',
+        control: { type: 'text', key: 'serverUrl', placeholder: DEFAULT_SETTINGS.serverUrl },
+      },
+      {
+        name: 'Sync now',
+        desc: 'Sync without waiting for the next one.',
+        action: () => void this.plugin.sync(true),
+      },
+    ];
+  }
 
-    new Setting(containerEl)
-      .setName('Server')
-      .setDesc('Change only to sync from a Skyreader other than skyreader.app.')
-      .addText((text) =>
-        text.setValue(settings.serverUrl).onChange(async (value) => {
-          settings.serverUrl = value.trim() || DEFAULT_SETTINGS.serverUrl;
-          this.collections = null;
-          await save();
-        })
-      );
+  getControlValue(key: string): unknown {
+    const settings = this.plugin.settings;
+    if (key.startsWith(COLLECTION))
+      return settings.collections.includes(key.slice(COLLECTION.length));
+    return settings[key as keyof PluginSettings];
+  }
 
-    new Setting(containerEl).addButton((button) =>
-      button
-        .setButtonText('Sync now')
-        .setCta()
-        .onClick(() => void this.plugin.sync(true))
+  async setControlValue(key: string, value: unknown) {
+    const settings = this.plugin.settings;
+    if (key.startsWith(COLLECTION)) {
+      const id = key.slice(COLLECTION.length);
+      settings.collections = value
+        ? [...new Set([...settings.collections, id])]
+        : settings.collections.filter((c) => c !== id);
+    } else if (key === 'folder') {
+      settings.folder = String(value);
+    } else if (key === 'scope') {
+      settings.scope = value === 'collections' ? 'collections' : 'everything';
+    } else if (key === 'intervalMinutes') {
+      settings.intervalMinutes = Number(value);
+    } else if (key === 'serverUrl') {
+      settings.serverUrl = String(value).trim() || DEFAULT_SETTINGS.serverUrl;
+      this.forgetCollections();
+    }
+    await this.plugin.persist();
+    if (key === 'intervalMinutes') this.plugin.schedule();
+    // The collections group comes and goes with the scope.
+    if (key === 'scope') this.update();
+  }
+
+  private forgetCollections() {
+    this.collections = null;
+    this.collectionsError = null;
+    this.loadingCollections = false;
+    this.generation++;
+  }
+
+  private collectionsGroup(): SettingDefinitionItem {
+    const group = (items: SettingDefinition[]): SettingDefinitionItem => ({
+      type: 'group',
+      heading: 'Collections',
+      items,
+    });
+    if (this.collectionsError !== null) {
+      return group([
+        {
+          name: 'Load your collections again',
+          desc: this.collectionsError,
+          action: () => {
+            this.collectionsError = null;
+            this.update();
+          },
+          aliases: ['Try again'],
+        },
+      ]);
+    }
+    if (this.collections === null) {
+      return group([
+        {
+          name: 'Loading your collections…',
+          searchable: false,
+          // Fetched when the tab shows it, not whenever definitions are read.
+          render: (setting) => {
+            setting.setName('Loading your collections…');
+            this.loadCollections();
+          },
+        },
+      ]);
+    }
+    if (this.collections.length === 0) {
+      return group([
+        {
+          name: 'No collections yet',
+          desc: 'Make one in Skyreader’s Library.',
+          searchable: false,
+        },
+      ]);
+    }
+    return group(
+      this.collections.map((collection) => ({
+        name: collection.name,
+        control: { type: 'toggle', key: `${COLLECTION}${collection.id}` },
+      }))
     );
   }
 
-  private displayCollections(containerEl: HTMLElement, save: () => Promise<void>) {
-    const settings = this.plugin.settings;
-    if (this.collections === null && this.collectionsError === null) {
-      void this.plugin
-        .collections()
-        .then((list) => {
-          this.collections = list;
-        })
-        .catch((err: unknown) => {
+  private loadCollections() {
+    if (this.loadingCollections) return;
+    this.loadingCollections = true;
+    const generation = this.generation;
+    void this.plugin
+      .collections()
+      .then(
+        (list) => {
+          if (generation === this.generation) this.collections = list;
+        },
+        (err: unknown) => {
+          if (generation !== this.generation) return;
           this.collectionsError = err instanceof Error ? err.message : String(err);
-        })
-        .finally(() => this.display());
-      new Setting(containerEl).setName('Collections').setDesc('Loading your collections…');
-      return;
-    }
-    if (this.collectionsError !== null) {
-      const message = this.collectionsError;
-      new Setting(containerEl)
-        .setName('Collections')
-        .setDesc(message)
-        .addButton((button) =>
-          button.setButtonText('Try again').onClick(() => {
-            this.collectionsError = null;
-            this.display();
-          })
-        );
-      return;
-    }
-    const list = this.collections ?? [];
-    if (list.length === 0) {
-      new Setting(containerEl)
-        .setName('Collections')
-        .setDesc('You have no Shelf collections yet. Make one in Skyreader’s Library.');
-      return;
-    }
-    for (const collection of list) {
-      new Setting(containerEl).setName(collection.name).addToggle((toggle) =>
-        toggle.setValue(settings.collections.includes(collection.id)).onChange(async (on) => {
-          settings.collections = on
-            ? [...new Set([...settings.collections, collection.id])]
-            : settings.collections.filter((id) => id !== collection.id);
-          await save();
-        })
-      );
-    }
+        }
+      )
+      .finally(() => {
+        if (generation !== this.generation) return;
+        this.loadingCollections = false;
+        this.update();
+      });
   }
 }
+
+const APP_PASSWORD_DESC =
+  'Make one in Skyreader under Settings → Notes & references. Highlight sync needs a Supporter plan.';
+
+/** Control keys for the collection toggles: the prefix, then the collection's id. */
+const COLLECTION = 'collection:';

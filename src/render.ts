@@ -141,12 +141,13 @@ export function frontmatterFor(source: SyncSource): Record<string, string | unde
 }
 
 // Characters a file name can't hold on some platform, or that Obsidian reads
-// as link syntax.
-const UNSAFE = /[\\/:*?"<>|#^[\]\u0000-\u001f]/g;
+// as link syntax. Control characters go too, below.
+const UNSAFE = /[\\/:*?"<>|#^[\]]/g;
 
 /** A file name (no extension) for the page's note: its title, made safe. */
 export function noteName(source: SyncSource): string {
   const name = displayTitle(source)
+    .replace(/\p{Cc}/gu, ' ')
     .replace(UNSAFE, ' ')
     .replace(/\s+/g, ' ')
     .trim()
