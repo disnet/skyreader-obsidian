@@ -179,6 +179,8 @@ class SkyreaderSettingTab extends PluginSettingTab {
   private collections: { id: string; name: string }[] | null = null;
   private collectionsError: string | null = null;
   private loadingCollections = false;
+  /** Bumped when the password or server changes, so a load already under way is ignored. */
+  private generation = 0;
 
   constructor(
     app: App,
@@ -192,10 +194,11 @@ class SkyreaderSettingTab extends PluginSettingTab {
     return [
       {
         name: 'App password',
-        desc: 'Make one in Skyreader under Settings → Notes & references. Highlight sync needs a Supporter plan.',
+        desc: APP_PASSWORD_DESC,
         // A password field, which the declarative text control can't be.
         render: (setting) => {
-          setting.setName('App password');
+          // Named here too, in case a render row isn't given its definition's text.
+          setting.setName('App password').setDesc(APP_PASSWORD_DESC);
           setting.addText((text) => {
             text.inputEl.type = 'password';
             text
@@ -230,6 +233,8 @@ class SkyreaderSettingTab extends PluginSettingTab {
         control: {
           type: 'number',
           key: 'intervalMinutes',
+          // What text that isn't a number becomes, rather than 0 (which stops syncing).
+          defaultValue: DEFAULT_SETTINGS.intervalMinutes,
           min: 0,
           step: 1,
           // Under 5 minutes would spend the server's allowance for nothing.
@@ -271,8 +276,7 @@ class SkyreaderSettingTab extends PluginSettingTab {
     } else if (key === 'scope') {
       settings.scope = value === 'collections' ? 'collections' : 'everything';
     } else if (key === 'intervalMinutes') {
-      const minutes = Number(value);
-      settings.intervalMinutes = minutes === 0 ? 0 : Math.max(5, Math.floor(minutes) || 0);
+      settings.intervalMinutes = Number(value);
     } else if (key === 'serverUrl') {
       settings.serverUrl = String(value).trim() || DEFAULT_SETTINGS.serverUrl;
       this.forgetCollections();
@@ -286,6 +290,8 @@ class SkyreaderSettingTab extends PluginSettingTab {
   private forgetCollections() {
     this.collections = null;
     this.collectionsError = null;
+    this.loadingCollections = false;
+    this.generation++;
   }
 
   private collectionsGroup(): SettingDefinitionItem {
@@ -297,8 +303,8 @@ class SkyreaderSettingTab extends PluginSettingTab {
     if (this.collectionsError !== null) {
       return group([
         {
-          name: 'Couldn’t load your collections',
-          desc: `${this.collectionsError} Click to try again.`,
+          name: 'Load your collections again',
+          desc: this.collectionsError,
           action: () => {
             this.collectionsError = null;
             this.update();
@@ -313,7 +319,10 @@ class SkyreaderSettingTab extends PluginSettingTab {
           name: 'Loading your collections…',
           searchable: false,
           // Fetched when the tab shows it, not whenever definitions are read.
-          render: () => this.loadCollections(),
+          render: (setting) => {
+            setting.setName('Loading your collections…');
+            this.loadCollections();
+          },
         },
       ]);
     }
@@ -337,20 +346,28 @@ class SkyreaderSettingTab extends PluginSettingTab {
   private loadCollections() {
     if (this.loadingCollections) return;
     this.loadingCollections = true;
+    const generation = this.generation;
     void this.plugin
       .collections()
-      .then((list) => {
-        this.collections = list;
-      })
-      .catch((err: unknown) => {
-        this.collectionsError = err instanceof Error ? err.message : String(err);
-      })
+      .then(
+        (list) => {
+          if (generation === this.generation) this.collections = list;
+        },
+        (err: unknown) => {
+          if (generation !== this.generation) return;
+          this.collectionsError = err instanceof Error ? err.message : String(err);
+        }
+      )
       .finally(() => {
+        if (generation !== this.generation) return;
         this.loadingCollections = false;
         this.update();
       });
   }
 }
+
+const APP_PASSWORD_DESC =
+  'Make one in Skyreader under Settings → Notes & references. Highlight sync needs a Supporter plan.';
 
 /** Control keys for the collection toggles: the prefix, then the collection's id. */
 const COLLECTION = 'collection:';

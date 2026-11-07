@@ -146,8 +146,8 @@ const UNSAFE = /[\\/:*?"<>|#^[\]]/g;
 
 /** A file name (no extension) for the page's note: its title, made safe. */
 export function noteName(source: SyncSource): string {
-  const name = Array.from(displayTitle(source), (c) => (c < ' ' ? ' ' : c))
-    .join('')
+  const name = displayTitle(source)
+    .replace(/\p{Cc}/gu, ' ')
     .replace(UNSAFE, ' ')
     .replace(/\s+/g, ' ')
     .trim()
